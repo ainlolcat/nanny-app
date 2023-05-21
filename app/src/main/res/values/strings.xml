@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Nanny</string>
+    <string name="action_settings">Settings</string>
+    <!-- Strings used for fragments for navigation -->
+    <string name="initial_fragment_label">Initial Fragment</string>
+    <string name="settings_fragment_label">Settings Fragment</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="previous">Previous</string>
+    <string name="save">Save</string>
+    <string name="discard">Discard</string>
+    <string name="settings">Settings</string>
+
+    <string name="hello_initial_fragment">Press start to start Nanny</string>
+    <string name="nanny_s_preferences">Nanny\'s preferences</string>
+</resources>
