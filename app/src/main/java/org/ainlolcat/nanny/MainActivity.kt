@@ -1,20 +1,23 @@
 package org.ainlolcat.nanny
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.PowerManager.WakeLock
 import android.util.Log
-import android.view.Menu
-import android.view.MenuItem
-import android.view.View
-import android.view.WindowManager
+import android.util.Size
+import android.view.*
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.navigation.findNavController
 import androidx.navigation.ui.AppBarConfiguration
 import androidx.navigation.ui.navigateUp
-import org.ainlolcat.nanny.R
+import com.google.android.material.snackbar.Snackbar
+import com.google.common.util.concurrent.ListenableFuture
 import org.ainlolcat.nanny.databinding.ActivityMainBinding
 import org.ainlolcat.nanny.services.PermissionHungryService
 import org.ainlolcat.nanny.services.audio.AudioDetectionService
@@ -23,7 +26,8 @@ import org.ainlolcat.nanny.services.control.TelegramBotCallback
 import org.ainlolcat.nanny.services.control.TelegramBotService
 import org.ainlolcat.nanny.settings.NannySettings
 import org.ainlolcat.nanny.utils.WavRecorder
-import com.google.android.material.snackbar.Snackbar
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -42,6 +46,7 @@ class MainActivity : AppCompatActivity() {
 
     private val connectedUserCommands = arrayOf(
         arrayOf("/louder", "/lower"),
+        arrayOf("/photo"),
         arrayOf("/unsubscribe")
     )
     private val disconnectedUserCommands = arrayOf(arrayOf("/start"))
@@ -58,6 +63,8 @@ class MainActivity : AppCompatActivity() {
 
         Log.i("MainActivity", "Starting main activity")
         detectionService = AudioRecordService()
+        (detectionService as PermissionHungryService).ensurePermission(this, "android.permission.CAMERA", PermissionHungryService.PERMISSION_COUNTER.incrementAndGet())
+
         initAndApplySettings()
 
         // wake lock prevents phone from sleep but it starts sending garbage instead of audio
@@ -82,7 +89,6 @@ class MainActivity : AppCompatActivity() {
         maxText: TextView
     ) {
         Log.i("MainActivity", "Start Nanny's switch init")
-        println(detectionService)
         if (detectionService is PermissionHungryService) {
             button.isEnabled = (detectionService as PermissionHungryService).ensurePermission(activity)
         }
@@ -146,7 +152,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (setting != null && avg > setting!!.soundLevelThreshold) {
-                    telegramBotService?.sendSoundThresholdAlarm(avg)
+                    telegramBotService?.sendBroadcastMessage("Alarm: threshold was reached. Current value: $avg", connectedUserCommands)
 
                     val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
                     wavRecorder.write(windowData, 0, windowOffset.get())
@@ -256,11 +262,126 @@ class MainActivity : AppCompatActivity() {
                                 connectedUserCommands
                             )
                         }
+                        if (message.equals("/photo")) {
+                            if (detectionService?.isRunning() == true) {
+                                if (chatId != null) {
+                                    takePictureX(chatId)
+                                }
+                            } else {
+                                if (chatId != null) {
+                                    telegramBotService!!.sendMessageToChat(
+                                        chatId,
+                                        "You need to start nanny to take photos.",
+                                        connectedUserCommands
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             )
             telegramBotService!!.init()
         }
+    }
+
+    private var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>? = null
+    private var imageCapture: ImageCapture? = null
+    private var camera: Camera? = null
+    private var cameraInitializationFailed = false;
+    private fun takePictureX(chatId: String) {
+        runOnUiThread {
+            takePictureXUiRunnable(chatId)
+        }
+    }
+
+    private fun takePictureXUiRunnable(chatId: String) {
+        // this init will work because only one thread access cameraProviderFuture/imageCapture
+        // pay attention to any changes here
+        if (cameraProviderFuture == null && !cameraInitializationFailed) {
+            try {
+                cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+            } catch (e: IllegalStateException) {
+                Log.e("MainActivity", "Could not init ProcessCameraProvider", e)
+                cameraInitializationFailed = true
+                telegramBotService?.sendBroadcastMessage("Could not init camera")
+            }
+        }
+        cameraProviderFuture!!.addListener({
+            runOnUiThread {
+                val provider = try {
+                    cameraProviderFuture!!.get()
+
+                } catch (e: java.lang.Exception) {
+                    Log.e("MainActivity", "Could not get ProcessCameraProvider from future", e)
+                    cameraInitializationFailed = true
+                    telegramBotService?.sendBroadcastMessage("Could not init camera")
+                    null
+                }
+                if (provider != null) {
+                    takePictureXCameraProviderListenerUiRunnable(provider, chatId)
+                }
+            }
+        }, executor)
+    }
+
+    private fun takePictureXCameraProviderListenerUiRunnable(
+        cameraProvider: ProcessCameraProvider,
+        chatId: String
+    ) {
+        val hasCamera = try {
+            cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+        } catch (e: CameraInfoUnavailableException) {
+            Log.i("MainActivity", "Cannot check camera availability", e)
+            false
+        }
+        if (!hasCamera) {
+            cameraInitializationFailed = true
+            executor.execute {
+                telegramBotService?.sendBroadcastMessage("Sorry, this phone does not have front camera")
+            }
+            return
+        }
+        if (imageCapture == null) {
+            imageCapture = ImageCapture
+                .Builder()
+                .setTargetResolution(Size(1920, 1080))
+                .build()
+        }
+        if (camera == null) {
+            camera = cameraProvider.bindToLifecycle(
+                this,
+                CameraSelector.DEFAULT_FRONT_CAMERA,
+                imageCapture
+            )
+        }
+        imageCapture!!.takePicture(executor,
+            object : ImageCapture.OnImageCapturedCallback() {
+
+                override fun onError(error: ImageCaptureException) {
+                    Log.i("MainActivity", "Got error", error)
+                }
+
+                override fun onCaptureSuccess(imageProxy: ImageProxy) {
+                    Log.i(
+                        "MainActivity",
+                        "Got image $imageProxy of size ${imageProxy.height}x${imageProxy.width}"
+                    )
+                    val planeProxy = imageProxy.planes[0]
+                    val buffer: ByteBuffer = planeProxy.buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    val stream = ByteArrayOutputStream()
+                    buffer.get(bytes)
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        .compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                    val data = stream.toByteArray()
+                    Log.i("MainActivity", "Schedule sending image of size ${data.size}")
+                    executor.execute {
+                        Log.i("MainActivity", "Start sending image of size ${data.size}")
+                        telegramBotService?.sendImageToChat(chatId, data)
+                    }
+                    imageProxy.close()
+                }
+            })
     }
 
     override fun onStop() {
