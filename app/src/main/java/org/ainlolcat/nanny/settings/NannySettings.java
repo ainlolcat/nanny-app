@@ -12,12 +12,24 @@ public class NannySettings {
     public static String  TG_BOT_SECRET_KEY = "TG_BOT_SECRET_KEY";
     public static String  ALLOWED_USERS_KEY = "ALLOWED_USERS_KEY";
     public static String  KNOWN_CHATS_WITH_ALLOWED_USERS_KEY = "KNOWN_CHATS_WITH_ALLOWED_USERS_KEY";
+
     public static String  SOUND_LEVEL_THRESHOLD_KEY = "SOUND_LEVEL_THRESHOLD_KEY";
+    public static String ALARM_COOLDOWN_SEC_KEY = "ALARM_COOLDOWN_SEC_KEY";
+    public static String ALARM_COOLDOWN_OVERRIDE_INCREASE_THRESHOLD_KEY = "ALARM_COOLDOWN_OVERRIDE_INCREASE_THRESHOLD_KEY";
+
+    public static String  BACKGROUND_COLOR_KEY = "BACKGROUND_COLOR_KEY";
+    public static String  SCREEN_BRIGHTNESS_KEY = "SCREEN_BRIGHTNESS_KEY";
 
     public final String botToken;
     public final Collection<String> allowedUsers;
     public final Map<String, String> knownChats;
+
     public final int soundLevelThreshold;
+    public final int alarmCooldownSec;
+    public final int alarmCooldownOverrideIncreaseThreshold;
+
+    public final String backgroundColor;
+    public final int screenBrightness;
 
     public NannySettings(SharedPreferences preferences) {
         botToken = preferences.getString(TG_BOT_SECRET_KEY, null);
@@ -27,14 +39,30 @@ public class NannySettings {
                 .map(x -> x.split(":"))
                 .collect(Collectors.toMap((x -> x[0]),(x -> x[1])))
         );
+
         soundLevelThreshold = preferences.getInt(SOUND_LEVEL_THRESHOLD_KEY, 5);
+        alarmCooldownSec = preferences.getInt(ALARM_COOLDOWN_SEC_KEY, 60);
+        alarmCooldownOverrideIncreaseThreshold = preferences.getInt(ALARM_COOLDOWN_OVERRIDE_INCREASE_THRESHOLD_KEY, 1);
+
+        // should not bother new installation but old one can have value with default ""
+        backgroundColor = preferences.getString(BACKGROUND_COLOR_KEY, "white").isEmpty() ? "white" :
+                preferences.getString(BACKGROUND_COLOR_KEY, "white");
+        screenBrightness = preferences.getInt(SCREEN_BRIGHTNESS_KEY, 60);
     }
 
-    public NannySettings(String botToken, Collection<String> allowedUsers, Map<String, String> knownChats, int soundLevelThreshold) {
+    public NannySettings(String botToken, Collection<String> allowedUsers, Map<String, String> knownChats,
+                         int soundLevelThreshold, int alarmCooldownSec, int alarmCooldownOverrideIncreaseThreshold,
+                         String backgroundColor, int screenBrightness) {
         this.botToken = botToken;
         this.allowedUsers = allowedUsers;
         this.knownChats = knownChats;
+
         this.soundLevelThreshold = soundLevelThreshold;
+        this.alarmCooldownSec = alarmCooldownSec;
+        this.alarmCooldownOverrideIncreaseThreshold = alarmCooldownOverrideIncreaseThreshold;
+
+        this.backgroundColor = backgroundColor;
+        this.screenBrightness = screenBrightness;
     }
 
     public void storeSettings(SharedPreferences preferences) {
@@ -42,7 +70,13 @@ public class NannySettings {
         editor.putString(TG_BOT_SECRET_KEY, botToken);
         editor.putStringSet(ALLOWED_USERS_KEY, new HashSet<>(allowedUsers));
         editor.putStringSet(KNOWN_CHATS_WITH_ALLOWED_USERS_KEY, knownChats.entrySet().stream().map(e -> e.getKey()+":"+e.getValue()).collect(Collectors.toSet()));
+
         editor.putInt(SOUND_LEVEL_THRESHOLD_KEY, soundLevelThreshold);
+        editor.putInt(ALARM_COOLDOWN_SEC_KEY, alarmCooldownSec);
+        editor.putInt(ALARM_COOLDOWN_OVERRIDE_INCREASE_THRESHOLD_KEY, alarmCooldownOverrideIncreaseThreshold);
+
+        editor.putString(BACKGROUND_COLOR_KEY, backgroundColor);
+        editor.putInt(SCREEN_BRIGHTNESS_KEY, screenBrightness);
         editor.apply();
     }
 
@@ -53,6 +87,10 @@ public class NannySettings {
                 ", allowedUsers=" + allowedUsers +
                 ", knownChatsSet=" + knownChats +
                 ", soundLevelThreshold=" + soundLevelThreshold +
+                ", alarmCooldownSec=" + alarmCooldownSec +
+                ", alarmCooldownOverrideIncreaseThreshold=" + alarmCooldownOverrideIncreaseThreshold +
+                ", backgroundColor=" + backgroundColor +
+                ", screenBrightness=" + screenBrightness +
                 '}';
     }
 }

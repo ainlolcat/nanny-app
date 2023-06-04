@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
     var detectionService: AudioDetectionService? = null
     var telegramBotService: TelegramBotService? = null
     var wl: WakeLock? = null
-    var setting: NannySettings? = null
+    lateinit var setting: NannySettings
     val executor: ExecutorService = Executors.newFixedThreadPool(3)
 
     @SuppressLint("WakelockTimeout")
@@ -124,16 +124,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         val sampleRateHz = 44100
-        val windowData = ByteArray(sampleRateHz * 5)
+        val windowSizeSec = 5
+        val samplesSize = sampleRateHz * windowSizeSec
+        val windowData = ByteArray(samplesSize)
         val windowOffset = AtomicInteger(0)
-        val timer = AtomicLong(System.currentTimeMillis())
+//        val lastCheckTime = AtomicLong(System.currentTimeMillis() + windowSizeSec * 1000)
+        val lastAlarmTime = AtomicLong(0)
+        val lastAlarmValue = AtomicInteger(0)
         detectionService.addCallback { data, offset, length ->
             val currentTime = System.currentTimeMillis()
+            // append data to windowData
             if (windowOffset.get() + length <= windowData.size) {
-                // append data to windowData
                 System.arraycopy(data, offset, windowData, windowOffset.get(), length)
                 windowOffset.addAndGet(length)
             } else {
+//                System.arraycopy(data, offset, windowData, 0, length)
+//                windowOffset.set(length)
+//            }
+//            // such analyse will most likely trigger two messages with different noise level on same sample (t and t + 1 sec)
+//            // so need to filter signal like |_____/``| and trigger only if wave hits start of the window.
+//            // todo dont forget to remove windowOffset.set(0)
+//            if (currentTime > lastCheckTime.get() + 1000L) {
+//                lastCheckTime.set(currentTime)
                 // process data
                 var commonMagnitude = 0
                 var max = 0
@@ -151,17 +163,33 @@ class MainActivity : AppCompatActivity() {
                     maxText.text = "$max"
                 }
 
-                if (setting != null && avg > setting!!.soundLevelThreshold) {
-                    telegramBotService?.sendBroadcastMessage("Alarm: threshold was reached. Current value: $avg", connectedUserCommands)
+                if (avg > setting.soundLevelThreshold) {
+                    val lastAvg = lastAlarmValue.get() / 100.0
+                    Log.i("MainActivity", "Start processing sound with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
+                    if (lastAlarmTime.get() + 1000 * setting.alarmCooldownSec < currentTime ||
+                        lastAvg + setting.alarmCooldownOverrideIncreaseThreshold < avg) {
+                        lastAlarmTime.set(currentTime)
+                        lastAlarmValue.set((100 * avg).toInt())
+                        telegramBotService?.sendBroadcastMessage(
+                            "Alarm: threshold was reached. Current value: $avg",
+                            connectedUserCommands
+                        )
 
-                    val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
-                    wavRecorder.write(windowData, 0, windowOffset.get())
+                        val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
+                        val currentOffset = windowOffset.get()
+                        Log.i("MainActivity", "Offset $currentOffset, window data size: ${windowData.size}")
+                        if (currentOffset < windowData.size)
+                            wavRecorder.write(windowData, currentOffset, windowData.size - currentOffset)
+                        if (currentOffset > 0)
+                            wavRecorder.write(windowData, 0, currentOffset)
 
-                    telegramBotService?.sendBroadcastVoice(wavRecorder.writeToArray())
+                        telegramBotService?.sendBroadcastVoice(wavRecorder.writeToArray())
+                    } else {
+                        Log.i("MainActivity", "Skip alarm with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
+                    }
                 }
 
                 windowOffset.set(0)
-                timer.set(currentTime)
             }
         }
     }
@@ -209,15 +237,20 @@ class MainActivity : AppCompatActivity() {
         }
         val preferences = getSharedPreferences("org.ainlolcat.nanny.app", MODE_PRIVATE)
         setting = NannySettings(preferences)
-        if (useTelegram && setting?.botToken?.isNotBlank() == true) {
+
+        val lp = window.attributes
+        lp.screenBrightness = (setting.screenBrightness / 100.0).toFloat()
+        window.attributes = lp
+
+        if (useTelegram && setting.botToken?.isNotBlank() == true) {
             telegramBotService = TelegramBotService(
-                setting!!.botToken,
-                setting!!.allowedUsers,
-                setting!!.knownChats,
+                setting.botToken,
+                setting.allowedUsers,
+                setting.knownChats,
                 object : TelegramBotCallback {
                     override fun onChatOpen(username: String?, chatId: String?) {
                         // todo settings can be updated from UI thread and from TG thread. Need sync.
-                        setting!!.storeSettings(preferences)
+                        setting.storeSettings(preferences)
                         telegramBotService!!.sendMessageToChat(
                             chatId!!,
                             "Welcome to Nanny.",
@@ -227,9 +260,9 @@ class MainActivity : AppCompatActivity() {
 
                     override fun onUnsubscribe(username: String?) {
                         // todo settings can be updated from UI thread and from TG thread. Need sync.
-                        var chatId = setting!!.knownChats.get(username)
-                        setting!!.knownChats.remove(username)
-                        setting!!.storeSettings(preferences)
+                        var chatId = setting.knownChats.get(username)
+                        setting.knownChats.remove(username)
+                        setting.storeSettings(preferences)
                         if (chatId != null) {
                             telegramBotService!!.sendMessageToChat(
                                 chatId,
@@ -242,23 +275,28 @@ class MainActivity : AppCompatActivity() {
                     override fun onMessage(username: String?, chatId: String?, message: String?) {
                         if (message.equals("/louder")) {
                             // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            val newSetting = NannySettings(setting!!.botToken, setting!!.allowedUsers, setting!!.knownChats, setting!!.soundLevelThreshold + 1)
+                            val newSetting = NannySettings(setting.botToken, setting.allowedUsers, setting.knownChats,
+                                setting.soundLevelThreshold + 1, setting.alarmCooldownSec, setting.alarmCooldownOverrideIncreaseThreshold,
+                                setting.backgroundColor, setting.screenBrightness
+                            )
                             setting = newSetting
-                            setting!!.storeSettings(preferences)
+                            setting.storeSettings(preferences)
                             telegramBotService!!.sendMessageToChat(
                                 chatId!!,
-                                "New sound alarm level is ${setting!!.soundLevelThreshold}",
+                                "New sound alarm level is ${setting.soundLevelThreshold}",
                                 connectedUserCommands
                             )
                         }
                         if (message.equals("/lower")) {
                             // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            val newSetting = NannySettings(setting!!.botToken, setting!!.allowedUsers, setting!!.knownChats, setting!!.soundLevelThreshold - 1)
+                            val newSetting = NannySettings(setting.botToken, setting.allowedUsers, setting.knownChats,
+                                setting.soundLevelThreshold - 1, setting.alarmCooldownSec, setting.alarmCooldownOverrideIncreaseThreshold,
+                                setting.backgroundColor, setting.screenBrightness)
                             setting = newSetting
-                            setting!!.storeSettings(preferences)
+                            setting.storeSettings(preferences)
                             telegramBotService!!.sendMessageToChat(
                                 chatId!!,
-                                "New sound alarm level is ${setting!!.soundLevelThreshold}",
+                                "New sound alarm level is ${setting.soundLevelThreshold}",
                                 connectedUserCommands
                             )
                         }

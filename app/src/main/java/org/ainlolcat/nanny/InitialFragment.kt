@@ -1,5 +1,6 @@
 package org.ainlolcat.nanny
 
+import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
 import android.view.LayoutInflater
@@ -43,6 +44,9 @@ class InitialFragment : Fragment() {
                 view, context as MainActivity,
                 binding.buttonStartInitial,
                 binding.textviewAvg, binding.textviewMax)
+
+            val colorName = (context as MainActivity).setting.backgroundColor
+            view.setBackgroundColor(Color.parseColor(colorName))
         }
     }
 
