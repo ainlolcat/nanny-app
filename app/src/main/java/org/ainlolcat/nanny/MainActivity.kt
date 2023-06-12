@@ -4,8 +4,11 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager.WakeLock
+import android.provider.MediaStore.Files
 import android.util.Log
 import android.util.Size
 import android.view.*
@@ -29,10 +32,13 @@ import org.ainlolcat.nanny.settings.NannySettings
 import org.ainlolcat.nanny.settings.NannySettingsBuilder
 import org.ainlolcat.nanny.utils.WavRecorder
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -48,19 +54,20 @@ class MainActivity : AppCompatActivity() {
     val BRIGHTNESS_INCREASE_COMMAND = "/brightness increase"
     val BRIGHTNESS_DECREASE_COMMAND = "/brightness decrease"
 
-//    val CALM_MODE_ON_COMMAND = "/calm-mode on"
-//    val CALM_MODE_SET_SOUND_COMMAND = "/calm-mode set sound"
-//    val CALM_MODE_OFF_COMMAND = "/calm-mode off"
-//    val CALM_MODE_SENS_INCREASE_COMMAND = "/calm-mode sensitivity increase"
-//    val CALM_MODE_SENS_DECREASE_COMMAND = "/calm-mode sensitivity decrease"
-//    val CALM_MODE_VOLUME_INCREASE_COMMAND = "/calm-mode volume increase"
-//    val CALM_MODE_VOLUME_DECREASE_COMMAND = "/calm-mode volume decrease"
+    val CALM_MODE_ON_COMMAND = "/calm-mode on"
+    val CALM_MODE_SET_SOUND_COMMAND = "/calm-mode set sound"
+    val CALM_MODE_OFF_COMMAND = "/calm-mode off"
+    val CALM_MODE_SENS_INCREASE_COMMAND = "/calm-mode sensitivity increase"
+    val CALM_MODE_SENS_DECREASE_COMMAND = "/calm-mode sensitivity decrease"
+    val CALM_MODE_VOLUME_INCREASE_COMMAND = "/calm-mode volume increase"
+    val CALM_MODE_VOLUME_DECREASE_COMMAND = "/calm-mode volume decrease"
 
     val TAKE_PHOTO_COMMAND = "/photo"
 
     private lateinit var appBarConfiguration: AppBarConfiguration
     private lateinit var binding: ActivityMainBinding
     var backgroundColorView: View? = null
+    var calmModeSavedSound: File? = null
 
     // hardcoded settings allows to turn off TG support for dev runs.
     // remaining function will be audio service which will show current noise level
@@ -71,15 +78,15 @@ class MainActivity : AppCompatActivity() {
             val result = ArrayList<Array<String>>()
             result.add(arrayOf(INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND))
             result.add(arrayOf(BACKGROUND_COLOR_SET_COMMAND, BRIGHTNESS_INCREASE_COMMAND, BRIGHTNESS_DECREASE_COMMAND))
-//            if (setting.calmModeOn) {
-//                result.add(arrayOf(CALM_MODE_OFF_COMMAND))
-//                result.add(arrayOf(CALM_MODE_SENS_INCREASE_COMMAND, CALM_MODE_SENS_DECREASE_COMMAND))
-//                result.add(arrayOf(CALM_MODE_VOLUME_INCREASE_COMMAND, CALM_MODE_VOLUME_DECREASE_COMMAND))
-//            } else if (setting.calmModeSound != null) {
-//                result.add(arrayOf(CALM_MODE_ON_COMMAND))
-//            } else {
-//                result.add(arrayOf(CALM_MODE_SET_SOUND_COMMAND))
-//            }
+            if (setting.calmModeOn) {
+                result.add(arrayOf(CALM_MODE_OFF_COMMAND, CALM_MODE_SET_SOUND_COMMAND))
+                result.add(arrayOf(CALM_MODE_SENS_INCREASE_COMMAND, CALM_MODE_SENS_DECREASE_COMMAND, ))
+                result.add(arrayOf(CALM_MODE_VOLUME_INCREASE_COMMAND, CALM_MODE_VOLUME_DECREASE_COMMAND))
+            } else if (setting.calmModeSound != null) {
+                result.add(arrayOf(CALM_MODE_ON_COMMAND, CALM_MODE_SET_SOUND_COMMAND))
+            } else {
+                result.add(arrayOf(CALM_MODE_SET_SOUND_COMMAND))
+            }
             result.add(arrayOf(TAKE_PHOTO_COMMAND))
             result.add(arrayOf("/unsubscribe"))
             return result.toTypedArray()
@@ -166,6 +173,7 @@ class MainActivity : AppCompatActivity() {
 //        val lastCheckTime = AtomicLong(System.currentTimeMillis() + windowSizeSec * 1000)
         val lastAlarmTime = AtomicLong(0)
         val lastAlarmValue = AtomicInteger(0)
+        var calmModePlaying = AtomicBoolean(false)
         detectionService.addCallback { data, offset, length ->
             val currentTime = System.currentTimeMillis()
             // append data to windowData
@@ -196,6 +204,43 @@ class MainActivity : AppCompatActivity() {
                 activity.runOnUiThread {
                     avgText.text = "$avg"
                     maxText.text = "$max"
+                }
+
+                if (setting.calmModeOn && !calmModePlaying.get() && avg > setting.calmModeSensitivity) {
+                    if (calmModeSavedSound == null) {
+                        val calmModeSoundData = android.util.Base64.decode(setting.calmModeSound, android.util.Base64.DEFAULT)
+                        calmModeSavedSound = File.createTempFile("voice", ".ogg")
+                        calmModeSavedSound!!.deleteOnExit()
+                        val stream = FileOutputStream(calmModeSavedSound)
+                        try {
+                            stream.write(calmModeSoundData)
+                        } finally {
+                            stream.close()
+                        }
+                    }
+
+                    val volume: Float = (setting.calmModeVolume / 100.0).toFloat()
+                    val mPlayer = MediaPlayer.create(this, Uri.fromFile(calmModeSavedSound))
+                    mPlayer.setVolume(volume, volume)
+                    mPlayer.setOnCompletionListener {
+                        try {
+                            mPlayer.release()
+                        } catch (e: java.lang.Exception) {
+                            Log.e("MainActivity", "Cannot release player due error", e)
+                        }
+                        calmModePlaying.set(false)
+                    }
+                    mPlayer.setOnErrorListener { mp, what, extra ->
+                        try {
+                            mPlayer.release()
+                        } catch (e: java.lang.Exception) {
+                            Log.e("MainActivity", "Cannot release player due error", e)
+                        }
+                        calmModePlaying.set(false)
+                        true
+                    }
+                    mPlayer.start()
+                    calmModePlaying.set(true)
                 }
 
                 if (avg > setting.soundLevelThreshold) {
@@ -282,6 +327,7 @@ class MainActivity : AppCompatActivity() {
                 setting.knownChats,
                 object : TelegramBotCallback {
                     var backgroundColorSetExpected = AtomicReference<String>()
+                    var calmModeSetSoundExpected = AtomicReference<String>()
 
                     override fun onChatOpen(username: String?, chatId: String?) {
                         // todo settings can be updated from UI thread and from TG thread. Need sync.
@@ -308,6 +354,35 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     override fun onMessage(username: String?, chatId: String?, message: String?) {
+                        if (message.equals(DECREASE_SENSITIVITY_COMMAND)) {
+                            // todo settings can be updated from UI thread and from TG thread. Need sync.
+                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold + 1).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New sound alarm level is ${setting.soundLevelThreshold}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(INCREASE_SENSITIVITY_COMMAND)) {
+                            // todo settings can be updated from UI thread and from TG thread. Need sync.
+                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold - 1).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New sound alarm level is ${setting.soundLevelThreshold}",
+                                connectedUserCommands
+                            )
+                        }
+
+                        if (message.equals(BACKGROUND_COLOR_SET_COMMAND)) {
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "Please write new color. Allowed: #RRGGBB or red, blue, green, black, white, gray, cyan, magenta, yellow, lightgray, darkgray, grey, lightgrey, darkgrey, aqua, fuchsia, lime, maroon, navy, olive, purple, silver, and teal.",
+                                connectedUserCommands
+                            )
+                            backgroundColorSetExpected.set(chatId)
+                        }
                         if (chatId.equals(backgroundColorSetExpected.get())) {
                             if (message != null && !message.startsWith("/")) {
                                 try {
@@ -335,37 +410,6 @@ class MainActivity : AppCompatActivity() {
                             }
                             backgroundColorSetExpected.set(null)
                         }
-                        if (message.equals(DECREASE_SENSITIVITY_COMMAND)) {
-                            // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold + 1).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New sound alarm level is ${setting.soundLevelThreshold}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(INCREASE_SENSITIVITY_COMMAND)) {
-                            // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold - 1).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New sound alarm level is ${setting.soundLevelThreshold}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(BACKGROUND_COLOR_SET_COMMAND)) {
-                            // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold - 1).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "Please write new color. Allowed: #RRGGBB or red, blue, green, black, white, gray, cyan, magenta, yellow, lightgray, darkgray, grey, lightgrey, darkgrey, aqua, fuchsia, lime, maroon, navy, olive, purple, silver, and teal.",
-                                connectedUserCommands
-                            )
-                            backgroundColorSetExpected.set(chatId)
-                        }
                         if (message.equals(BRIGHTNESS_DECREASE_COMMAND)) {
                             // todo settings can be updated from UI thread and from TG thread. Need sync.
                             setting = NannySettingsBuilder(setting).setScreenBrightness(setting.screenBrightness - 10).build()
@@ -388,6 +432,75 @@ class MainActivity : AppCompatActivity() {
                                 connectedUserCommands
                             )
                         }
+
+                        if (message.equals(CALM_MODE_SET_SOUND_COMMAND)) {
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "Please send voice message to bot.",
+                                connectedUserCommands
+                            )
+                            calmModeSetSoundExpected.set(chatId)
+                        }
+                        if (chatId.equals(calmModeSetSoundExpected.get())) {
+                            if (message != null && !message.startsWith("/")) {
+                                calmModeSetSoundExpected.set(null)
+                            }
+                        }
+                        if (message.equals(CALM_MODE_ON_COMMAND)) {
+                            setting = NannySettingsBuilder(setting).setCalmModeOn(true).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "Calm-mode was enabled with sensitivity ${setting.calmModeSensitivity} and volume ${setting.calmModeVolume}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(CALM_MODE_SENS_DECREASE_COMMAND)) {
+                            setting = NannySettingsBuilder(setting).setCalmModeSensitivity(setting.calmModeSensitivity + 1).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New calm-mode sensitivity is ${setting.calmModeSensitivity}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(CALM_MODE_SENS_INCREASE_COMMAND)) {
+                            setting = NannySettingsBuilder(setting).setCalmModeSensitivity(setting.calmModeSensitivity - 1).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New calm-mode sensitivity is ${setting.calmModeSensitivity}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(CALM_MODE_VOLUME_DECREASE_COMMAND)) {
+                            setting = NannySettingsBuilder(setting).setCalmModeVolume(setting.calmModeVolume - 10).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New calm-mode volume is ${setting.calmModeVolume}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(CALM_MODE_VOLUME_INCREASE_COMMAND)) {
+                            setting = NannySettingsBuilder(setting).setCalmModeVolume(setting.calmModeVolume + 10).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New calm-mode volume is ${setting.calmModeVolume}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(CALM_MODE_OFF_COMMAND)) {
+                            setting = NannySettingsBuilder(setting).setCalmModeOn(false).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "Calm-mode was disabled",
+                                connectedUserCommands
+                            )
+                        }
+
                         if (message.equals(TAKE_PHOTO_COMMAND)) {
                             if (detectionService?.isRunning() == true) {
                                 if (chatId != null) {
@@ -402,6 +515,22 @@ class MainActivity : AppCompatActivity() {
                                     )
                                 }
                             }
+                        }
+                    }
+
+                    override fun onVoiceMessage(username: String?, chatId: String?, data: ByteArray?) {
+                        if (calmModeSetSoundExpected.get() == chatId) {
+                            setting = NannySettingsBuilder(setting)
+                                .setCalmModeSound(android.util.Base64.encodeToString(data, android.util.Base64.DEFAULT))
+                                .build()
+                            setting.storeSettings(preferences)
+                            calmModeSavedSound = null
+                            calmModeSetSoundExpected.set(null)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "Sound for calm mode was saved",
+                                connectedUserCommands
+                            )
                         }
                     }
                 }

@@ -5,14 +5,13 @@ import com.pengrad.telegrambot.Callback
 import com.pengrad.telegrambot.TelegramBot
 import com.pengrad.telegrambot.TelegramException
 import com.pengrad.telegrambot.UpdatesListener
+import com.pengrad.telegrambot.model.File
 import com.pengrad.telegrambot.model.Update
 import com.pengrad.telegrambot.model.request.ReplyKeyboardMarkup
 import com.pengrad.telegrambot.model.request.ReplyKeyboardRemove
-import com.pengrad.telegrambot.request.BaseRequest
-import com.pengrad.telegrambot.request.SendMessage
-import com.pengrad.telegrambot.request.SendPhoto
-import com.pengrad.telegrambot.request.SendVoice
+import com.pengrad.telegrambot.request.*
 import com.pengrad.telegrambot.response.BaseResponse
+import com.pengrad.telegrambot.response.GetFileResponse
 import java.io.IOException
 
 class TelegramBotService(botToken: String,
@@ -36,10 +35,20 @@ class TelegramBotService(botToken: String,
                                 callback.onChatOpen(username, userId)
                             }
                             val message = update.message().text()
-                            if (message.equals("/unsubscribe")) {
+                            val voice = update.message().voice()
+
+                            if ("/unsubscribe" == message) {
                                 callback.onUnsubscribe(username)
-                            } else {
+                            } else if (message != null && message != "null"){
                                 callback.onMessage(username, userId, message)
+                            } else if (voice != null) {
+                                val fileId = voice.fileId()
+                                val request = GetFile(fileId)
+                                val getFileResponse: GetFileResponse = client.execute(request)
+                                val file: File = getFileResponse.file()
+//                                val fullPath: String = client.getFullFilePath(file)  //  https://api.telegram.org/file/<BOT_TOKEN>/<FILE_PATH>
+                                val data: ByteArray = client.getFileContent(file)
+                                callback.onVoiceMessage(username, userId, data)
                             }
                             Log.i("TelegramBotService", "Message from approved user: $update")
                         } else {
