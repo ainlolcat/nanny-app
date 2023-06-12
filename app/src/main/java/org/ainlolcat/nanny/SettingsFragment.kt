@@ -14,6 +14,7 @@ import androidx.navigation.fragment.findNavController
 import org.ainlolcat.nanny.databinding.FragmentSettingsBinding
 import org.ainlolcat.nanny.settings.NannySettings
 import com.google.android.material.snackbar.Snackbar
+import org.ainlolcat.nanny.settings.NannySettingsBuilder
 import java.lang.IllegalArgumentException
 import java.util.stream.Collectors
 
@@ -70,11 +71,16 @@ class SettingsFragment : Fragment() {
             val backgroundColor = tryToGetColor(binding.settingBackgroundColor, nannySettings.backgroundColor?:"white", "Background Color", view)
             val screenBrightness = tryToGetNumber(binding.settingScreenBrightness, nannySettings.alarmCooldownSec, "Screen brightness", view)
 
-            val newNannySettings = NannySettings(
-                newBotToken, newAllowedUsers, newKnownChats,
-                newThreshold, newCooldownSec, newCooldownOverride,
-                backgroundColor, screenBrightness
-            )
+            val newNannySettings = NannySettingsBuilder(nannySettings)
+                .setBotToken(newBotToken)
+                .setAllowedUsers(newAllowedUsers)
+                .setKnownChats(newKnownChats)
+                .setSoundLevelThreshold(newThreshold)
+                .setAlarmCooldownSec(newCooldownSec)
+                .setAlarmCooldownOverrideIncreaseThreshold(newCooldownOverride)
+                .setBackgroundColor(backgroundColor)
+                .setScreenBrightness(screenBrightness)
+                .build()
 
             newNannySettings.storeSettings(preferences)
             Log.i("SettingsFragment", "New settings: $newNannySettings")
@@ -93,6 +99,7 @@ class SettingsFragment : Fragment() {
         if (context is MainActivity) {
             val colorName = (context as MainActivity).setting.backgroundColor
             view.setBackgroundColor(Color.parseColor(colorName))
+            (context as MainActivity).backgroundColorView = view
         }
     }
 
@@ -123,5 +130,7 @@ class SettingsFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
+        if (context is MainActivity)
+            (context as MainActivity).backgroundColorView = null
     }
 }

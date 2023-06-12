@@ -3,6 +3,7 @@ package org.ainlolcat.nanny
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.os.Bundle
 import android.os.PowerManager.WakeLock
 import android.util.Log
@@ -25,6 +26,7 @@ import org.ainlolcat.nanny.services.audio.impl.AudioRecordService
 import org.ainlolcat.nanny.services.control.TelegramBotCallback
 import org.ainlolcat.nanny.services.control.TelegramBotService
 import org.ainlolcat.nanny.settings.NannySettings
+import org.ainlolcat.nanny.settings.NannySettingsBuilder
 import org.ainlolcat.nanny.utils.WavRecorder
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -33,22 +35,55 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 
 class MainActivity : AppCompatActivity() {
+
+    val INCREASE_SENSITIVITY_COMMAND = "/sensitivity increase"
+    val DECREASE_SENSITIVITY_COMMAND = "/sensitivity decrease"
+
+    val BACKGROUND_COLOR_SET_COMMAND = "/background color"
+    val BRIGHTNESS_INCREASE_COMMAND = "/brightness increase"
+    val BRIGHTNESS_DECREASE_COMMAND = "/brightness decrease"
+
+//    val CALM_MODE_ON_COMMAND = "/calm-mode on"
+//    val CALM_MODE_SET_SOUND_COMMAND = "/calm-mode set sound"
+//    val CALM_MODE_OFF_COMMAND = "/calm-mode off"
+//    val CALM_MODE_SENS_INCREASE_COMMAND = "/calm-mode sensitivity increase"
+//    val CALM_MODE_SENS_DECREASE_COMMAND = "/calm-mode sensitivity decrease"
+//    val CALM_MODE_VOLUME_INCREASE_COMMAND = "/calm-mode volume increase"
+//    val CALM_MODE_VOLUME_DECREASE_COMMAND = "/calm-mode volume decrease"
+
+    val TAKE_PHOTO_COMMAND = "/photo"
+
     private lateinit var appBarConfiguration: AppBarConfiguration
     private lateinit var binding: ActivityMainBinding
+    var backgroundColorView: View? = null
 
     // hardcoded settings allows to turn off TG support for dev runs.
     // remaining function will be audio service which will show current noise level
     val useTelegram = true
 
-    private val connectedUserCommands = arrayOf(
-        arrayOf("/louder", "/lower"),
-        arrayOf("/photo"),
-        arrayOf("/unsubscribe")
-    )
+    private val connectedUserCommands: Array<Array<String>>
+        get() {
+            val result = ArrayList<Array<String>>()
+            result.add(arrayOf(INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND))
+            result.add(arrayOf(BACKGROUND_COLOR_SET_COMMAND, BRIGHTNESS_INCREASE_COMMAND, BRIGHTNESS_DECREASE_COMMAND))
+//            if (setting.calmModeOn) {
+//                result.add(arrayOf(CALM_MODE_OFF_COMMAND))
+//                result.add(arrayOf(CALM_MODE_SENS_INCREASE_COMMAND, CALM_MODE_SENS_DECREASE_COMMAND))
+//                result.add(arrayOf(CALM_MODE_VOLUME_INCREASE_COMMAND, CALM_MODE_VOLUME_DECREASE_COMMAND))
+//            } else if (setting.calmModeSound != null) {
+//                result.add(arrayOf(CALM_MODE_ON_COMMAND))
+//            } else {
+//                result.add(arrayOf(CALM_MODE_SET_SOUND_COMMAND))
+//            }
+            result.add(arrayOf(TAKE_PHOTO_COMMAND))
+            result.add(arrayOf("/unsubscribe"))
+            return result.toTypedArray()
+        }
     private val disconnectedUserCommands = arrayOf(arrayOf("/start"))
 
     var detectionService: AudioDetectionService? = null
@@ -238,9 +273,7 @@ class MainActivity : AppCompatActivity() {
         val preferences = getSharedPreferences("org.ainlolcat.nanny.app", MODE_PRIVATE)
         setting = NannySettings(preferences)
 
-        val lp = window.attributes
-        lp.screenBrightness = (setting.screenBrightness / 100.0).toFloat()
-        window.attributes = lp
+        setBrightness()
 
         if (useTelegram && setting.botToken?.isNotBlank() == true) {
             telegramBotService = TelegramBotService(
@@ -248,6 +281,8 @@ class MainActivity : AppCompatActivity() {
                 setting.allowedUsers,
                 setting.knownChats,
                 object : TelegramBotCallback {
+                    var backgroundColorSetExpected = AtomicReference<String>()
+
                     override fun onChatOpen(username: String?, chatId: String?) {
                         // todo settings can be updated from UI thread and from TG thread. Need sync.
                         setting.storeSettings(preferences)
@@ -273,13 +308,36 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     override fun onMessage(username: String?, chatId: String?, message: String?) {
-                        if (message.equals("/louder")) {
+                        if (chatId.equals(backgroundColorSetExpected.get())) {
+                            if (message != null && !message.startsWith("/")) {
+                                try {
+                                    val newColor = Color.parseColor(message)
+                                    setting = NannySettingsBuilder(setting)
+                                        .setBackgroundColor(message)
+                                        .build()
+                                    setting.storeSettings(preferences)
+                                    runOnUiThread {
+                                        backgroundColorView?.setBackgroundColor(newColor)
+                                    }
+                                    telegramBotService!!.sendMessageToChat(
+                                        chatId!!,
+                                        "New color is ${setting.backgroundColor}",
+                                        connectedUserCommands
+                                    )
+                                } catch (e: java.lang.Exception) {
+                                    Log.e("MainActivity", "Cannot set new color", e)
+                                    telegramBotService!!.sendMessageToChat(
+                                        chatId!!,
+                                        "Cannot parse color ${message}. Allowed: #RRGGBB or red, blue, green, black, white, gray, cyan, magenta, yellow, lightgray, darkgray, grey, lightgrey, darkgrey, aqua, fuchsia, lime, maroon, navy, olive, purple, silver, and teal.",
+                                        connectedUserCommands
+                                    )
+                                }
+                            }
+                            backgroundColorSetExpected.set(null)
+                        }
+                        if (message.equals(DECREASE_SENSITIVITY_COMMAND)) {
                             // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            val newSetting = NannySettings(setting.botToken, setting.allowedUsers, setting.knownChats,
-                                setting.soundLevelThreshold + 1, setting.alarmCooldownSec, setting.alarmCooldownOverrideIncreaseThreshold,
-                                setting.backgroundColor, setting.screenBrightness
-                            )
-                            setting = newSetting
+                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold + 1).build()
                             setting.storeSettings(preferences)
                             telegramBotService!!.sendMessageToChat(
                                 chatId!!,
@@ -287,12 +345,9 @@ class MainActivity : AppCompatActivity() {
                                 connectedUserCommands
                             )
                         }
-                        if (message.equals("/lower")) {
+                        if (message.equals(INCREASE_SENSITIVITY_COMMAND)) {
                             // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            val newSetting = NannySettings(setting.botToken, setting.allowedUsers, setting.knownChats,
-                                setting.soundLevelThreshold - 1, setting.alarmCooldownSec, setting.alarmCooldownOverrideIncreaseThreshold,
-                                setting.backgroundColor, setting.screenBrightness)
-                            setting = newSetting
+                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold - 1).build()
                             setting.storeSettings(preferences)
                             telegramBotService!!.sendMessageToChat(
                                 chatId!!,
@@ -300,7 +355,40 @@ class MainActivity : AppCompatActivity() {
                                 connectedUserCommands
                             )
                         }
-                        if (message.equals("/photo")) {
+                        if (message.equals(BACKGROUND_COLOR_SET_COMMAND)) {
+                            // todo settings can be updated from UI thread and from TG thread. Need sync.
+                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold - 1).build()
+                            setting.storeSettings(preferences)
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "Please write new color. Allowed: #RRGGBB or red, blue, green, black, white, gray, cyan, magenta, yellow, lightgray, darkgray, grey, lightgrey, darkgrey, aqua, fuchsia, lime, maroon, navy, olive, purple, silver, and teal.",
+                                connectedUserCommands
+                            )
+                            backgroundColorSetExpected.set(chatId)
+                        }
+                        if (message.equals(BRIGHTNESS_DECREASE_COMMAND)) {
+                            // todo settings can be updated from UI thread and from TG thread. Need sync.
+                            setting = NannySettingsBuilder(setting).setScreenBrightness(setting.screenBrightness - 10).build()
+                            setting.storeSettings(preferences)
+                            runOnUiThread { setBrightness() }
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New screen brightness is ${setting.screenBrightness}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(BRIGHTNESS_INCREASE_COMMAND)) {
+                            // todo settings can be updated from UI thread and from TG thread. Need sync.
+                            setting = NannySettingsBuilder(setting).setScreenBrightness(setting.screenBrightness + 10).build()
+                            setting.storeSettings(preferences)
+                            runOnUiThread { setBrightness() }
+                            telegramBotService!!.sendMessageToChat(
+                                chatId!!,
+                                "New screen brightness is ${setting.screenBrightness}",
+                                connectedUserCommands
+                            )
+                        }
+                        if (message.equals(TAKE_PHOTO_COMMAND)) {
                             if (detectionService?.isRunning() == true) {
                                 if (chatId != null) {
                                     takePictureX(chatId)
@@ -320,6 +408,12 @@ class MainActivity : AppCompatActivity() {
             )
             telegramBotService!!.init()
         }
+    }
+
+    private fun setBrightness() {
+        val lp = window.attributes
+        lp.screenBrightness = (setting.screenBrightness / 100.0).toFloat()
+        window.attributes = lp
     }
 
     private var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>? = null

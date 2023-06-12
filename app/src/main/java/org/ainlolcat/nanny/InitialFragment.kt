@@ -8,7 +8,6 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.findNavController
-import org.ainlolcat.nanny.R
 import org.ainlolcat.nanny.databinding.FragmentInitialBinding
 
 
@@ -47,11 +46,14 @@ class InitialFragment : Fragment() {
 
             val colorName = (context as MainActivity).setting.backgroundColor
             view.setBackgroundColor(Color.parseColor(colorName))
+            (context as MainActivity).backgroundColorView = view
         }
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
+        if (context is MainActivity)
+            (context as MainActivity).backgroundColorView = null
     }
 }
