@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     private val connectedUserCommands: Array<Array<String>>
         get() {
             val result = ArrayList<Array<String>>()
+            result.add(arrayOf(TAKE_PHOTO_COMMAND))
             result.add(arrayOf(INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND))
             result.add(arrayOf(BACKGROUND_COLOR_SET_COMMAND, BRIGHTNESS_INCREASE_COMMAND, BRIGHTNESS_DECREASE_COMMAND))
             if (setting.calmModeOn) {
@@ -87,7 +88,6 @@ class MainActivity : AppCompatActivity() {
             } else {
                 result.add(arrayOf(CALM_MODE_SET_SOUND_COMMAND))
             }
-            result.add(arrayOf(TAKE_PHOTO_COMMAND))
             result.add(arrayOf("/unsubscribe"))
             return result.toTypedArray()
         }
@@ -170,10 +170,14 @@ class MainActivity : AppCompatActivity() {
         val samplesSize = sampleRateHz * windowSizeSec
         val windowData = ByteArray(samplesSize)
         val windowOffset = AtomicInteger(0)
-//        val lastCheckTime = AtomicLong(System.currentTimeMillis() + windowSizeSec * 1000)
+        val lastCheckTime = AtomicLong(System.currentTimeMillis() + windowSizeSec * 1000)
+
+        val alarmStartedAt = AtomicLong(0)
+        val alarmValue = AtomicInteger(0)
+
         val lastAlarmTime = AtomicLong(0)
         val lastAlarmValue = AtomicInteger(0)
-        var calmModePlaying = AtomicBoolean(false)
+        val calmModePlaying = AtomicBoolean(false)
         detectionService.addCallback { data, offset, length ->
             val currentTime = System.currentTimeMillis()
             // append data to windowData
@@ -181,14 +185,16 @@ class MainActivity : AppCompatActivity() {
                 System.arraycopy(data, offset, windowData, windowOffset.get(), length)
                 windowOffset.addAndGet(length)
             } else {
-//                System.arraycopy(data, offset, windowData, 0, length)
-//                windowOffset.set(length)
-//            }
-//            // such analyse will most likely trigger two messages with different noise level on same sample (t and t + 1 sec)
-//            // so need to filter signal like |_____/``| and trigger only if wave hits start of the window.
-//            // todo dont forget to remove windowOffset.set(0)
-//            if (currentTime > lastCheckTime.get() + 1000L) {
-//                lastCheckTime.set(currentTime)
+                System.arraycopy(data, offset, windowData, 0, length)
+                windowOffset.set(length)
+            }
+            // such analyse will most likely trigger two messages with different noise level on same sample (t and t + 1 sec)
+            // so need to filter signal like |_____/``| and trigger only if wave hits start of the window.
+            // there are two mechanics:
+            // * alarmStartedAt allows to delay send up to 2 seconds
+            // * alarmValue will force send if sound level decreases (but still above threshold)
+            if (currentTime > lastCheckTime.get() + 1000L) {
+                lastCheckTime.set(currentTime)
                 // process data
                 var commonMagnitude = 0
                 var max = 0
@@ -244,32 +250,47 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (avg > setting.soundLevelThreshold) {
-                    val lastAvg = lastAlarmValue.get() / 100.0
-                    Log.i("MainActivity", "Start processing sound with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
-                    if (lastAlarmTime.get() + 1000 * setting.alarmCooldownSec < currentTime ||
-                        lastAvg + setting.alarmCooldownOverrideIncreaseThreshold < avg) {
-                        lastAlarmTime.set(currentTime)
-                        lastAlarmValue.set((100 * avg).toInt())
-                        telegramBotService?.sendBroadcastMessage(
-                            "Alarm: threshold was reached. Current value: $avg",
-                            connectedUserCommands
-                        )
+                    val currentAlarmValue = alarmValue.get() / 100.0
+                    if (alarmStartedAt.get() + 2000L > currentTime || avg < currentAlarmValue) { // give 2 sec or if sound is lowering
+                        val lastAvg = lastAlarmValue.get() / 100.0
+                        Log.i("MainActivity", "Start processing sound with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
+                        val canThrowEvent =
+                            (currentTime - lastAlarmTime.get() > 5000L ) && // hard limit on message freq
+                            (lastAlarmTime.get() + 1000 * setting.alarmCooldownSec < currentTime || // user defined limit on freq
+                                    lastAvg + setting.alarmCooldownOverrideIncreaseThreshold < avg)  // user defined cooldown override on extreame sound increase
+                        if (canThrowEvent) {
+                            lastAlarmTime.set(currentTime)
+                            lastAlarmValue.set((100 * avg).toInt())
+                            telegramBotService?.sendBroadcastMessage(
+                                "Alarm: threshold was reached. Current value: $avg",
+                                connectedUserCommands
+                            )
 
-                        val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
-                        val currentOffset = windowOffset.get()
-                        Log.i("MainActivity", "Offset $currentOffset, window data size: ${windowData.size}")
-                        if (currentOffset < windowData.size)
-                            wavRecorder.write(windowData, currentOffset, windowData.size - currentOffset)
-                        if (currentOffset > 0)
-                            wavRecorder.write(windowData, 0, currentOffset)
+                            val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
+                            val currentOffset = windowOffset.get()
+                            Log.i("MainActivity", "Offset $currentOffset, window data size: ${windowData.size}")
+                            if (currentOffset < windowData.size)
+                                wavRecorder.write(windowData, currentOffset, windowData.size - currentOffset)
+                            if (currentOffset > 0)
+                                wavRecorder.write(windowData, 0, currentOffset)
 
-                        telegramBotService?.sendBroadcastVoice(wavRecorder.writeToArray())
+                            telegramBotService?.sendBroadcastVoice(wavRecorder.writeToArray())
+                        } else {
+                            Log.i("MainActivity", "Skip alarm with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
+                        }
+                        alarmStartedAt.set(0)
+                        alarmValue.set(0)
                     } else {
-                        Log.i("MainActivity", "Skip alarm with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
+                        Log.i("MainActivity", "Skip alarm with avg $avg as first encounter")
+                        if (alarmStartedAt.get() == 0L) {
+                            alarmStartedAt.set(currentTime)
+                        }
+                        alarmValue.set(Math.max(alarmValue.get(), (100 * avg).toInt()))
                     }
+                } else {
+                    alarmStartedAt.set(0)
+                    alarmValue.set(0)
                 }
-
-                windowOffset.set(0)
             }
         }
     }
