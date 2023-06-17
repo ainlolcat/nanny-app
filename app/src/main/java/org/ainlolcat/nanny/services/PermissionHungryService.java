@@ -7,8 +7,11 @@ import android.util.Log;
 
 import androidx.core.app.ActivityCompat;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 public interface PermissionHungryService {
 
@@ -33,6 +36,18 @@ public interface PermissionHungryService {
             allGranted = allGranted && ensurePermission(activity, permission.getKey(), permission.getValue());
         }
         return allGranted;
+    }
+
+    default boolean ensurePermission(Activity activity, Collection<String> permissions, int listenCode) {
+        Collection<String> needToGrant = permissions.stream().filter(permission -> {
+            int permissionGranted = ActivityCompat.checkSelfPermission(activity, permission);
+            Log.i("PermissionHungryService", "Starting to check permission " + permission + " with current grant: " + permissionGranted);
+            return permissionGranted != PackageManager.PERMISSION_GRANTED;
+        }).collect(Collectors.toList());
+        if (!needToGrant.isEmpty()) {
+            ActivityCompat.requestPermissions(activity, needToGrant.toArray(new String[]{}), listenCode);
+        }
+        return needToGrant.isEmpty();
     }
 
     default boolean ensurePermission(Activity activity, String permission, int listenCode) {

@@ -69,7 +69,7 @@ class SettingsFragment : Fragment() {
             val newCooldownSec = tryToGetNumber(binding.settingAlarmCooldownSec, nannySettings.alarmCooldownSec, "Cooldown seconds", view)
             val newCooldownOverride = tryToGetNumber(binding.settingAlarmCooldownOverrideIncrease, nannySettings.alarmCooldownOverrideIncreaseThreshold, "Cooldown override delta", view)
             val backgroundColor = tryToGetColor(binding.settingBackgroundColor, nannySettings.backgroundColor?:"white", "Background Color", view)
-            val screenBrightness = tryToGetNumber(binding.settingScreenBrightness, nannySettings.alarmCooldownSec, "Screen brightness", view)
+            val screenBrightness = tryToGetNumber(binding.settingScreenBrightness, 0, 100, nannySettings.alarmCooldownSec, "Screen brightness", view)
 
             val newNannySettings = NannySettingsBuilder(nannySettings)
                 .setBotToken(newBotToken)
@@ -122,7 +122,23 @@ class SettingsFragment : Fragment() {
         } else {
             Snackbar.make(view, "$nameInMessage should be a number", Snackbar.LENGTH_LONG)
                 .setAction("Action", null).show()
-            reenterTransition
+            return defValue;
+        }
+    }
+
+    private fun tryToGetNumber(editText: EditText, min: Int, max: Int, defValue: Int, nameInMessage: String, view: View): Int {
+        val newValueText = editText.text.toString()
+        if (newValueText.matches("^[0-9]+$".toRegex())) {
+            val value = Integer.parseInt(newValueText)
+            if (value > max || value < min) {
+                Snackbar.make(view, "$nameInMessage should be between $min and $max", Snackbar.LENGTH_LONG)
+                    .setAction("Action", null).show()
+                return defValue
+            }
+            return value
+        } else {
+            Snackbar.make(view, "$nameInMessage should be a number", Snackbar.LENGTH_LONG)
+                .setAction("Action", null).show()
             return defValue;
         }
     }

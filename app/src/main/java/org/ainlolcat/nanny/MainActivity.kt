@@ -4,11 +4,8 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager.WakeLock
-import android.provider.MediaStore.Files
 import android.util.Log
 import android.util.Size
 import android.view.*
@@ -23,66 +20,89 @@ import androidx.navigation.ui.navigateUp
 import com.google.android.material.snackbar.Snackbar
 import com.google.common.util.concurrent.ListenableFuture
 import org.ainlolcat.nanny.databinding.ActivityMainBinding
+import org.ainlolcat.nanny.services.AlarmingService
+import org.ainlolcat.nanny.services.CalmingService
+import org.ainlolcat.nanny.services.CameraService
 import org.ainlolcat.nanny.services.PermissionHungryService
 import org.ainlolcat.nanny.services.audio.AudioDetectionService
 import org.ainlolcat.nanny.services.audio.impl.AudioRecordService
-import org.ainlolcat.nanny.services.control.TelegramBotCallback
 import org.ainlolcat.nanny.services.control.TelegramBotService
+import org.ainlolcat.nanny.services.control.TgController
 import org.ainlolcat.nanny.settings.NannySettings
-import org.ainlolcat.nanny.settings.NannySettingsBuilder
-import org.ainlolcat.nanny.utils.WavRecorder
 import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
+import kotlin.collections.HashSet
 import kotlin.math.abs
 
 
 class MainActivity : AppCompatActivity() {
 
-    val INCREASE_SENSITIVITY_COMMAND = "/sensitivity increase"
-    val DECREASE_SENSITIVITY_COMMAND = "/sensitivity decrease"
+    private val TAG = "MainActivity"
 
-    val BACKGROUND_COLOR_SET_COMMAND = "/background color"
-    val BRIGHTNESS_INCREASE_COMMAND = "/brightness increase"
-    val BRIGHTNESS_DECREASE_COMMAND = "/brightness decrease"
+    companion object {
+        val INCREASE_SENSITIVITY_COMMAND = "/sensitivity increase"
+        val DECREASE_SENSITIVITY_COMMAND = "/sensitivity decrease"
 
-    val CALM_MODE_ON_COMMAND = "/calm-mode on"
-    val CALM_MODE_SET_SOUND_COMMAND = "/calm-mode set sound"
-    val CALM_MODE_OFF_COMMAND = "/calm-mode off"
-    val CALM_MODE_SENS_INCREASE_COMMAND = "/calm-mode sensitivity increase"
-    val CALM_MODE_SENS_DECREASE_COMMAND = "/calm-mode sensitivity decrease"
-    val CALM_MODE_VOLUME_INCREASE_COMMAND = "/calm-mode volume increase"
-    val CALM_MODE_VOLUME_DECREASE_COMMAND = "/calm-mode volume decrease"
+        val BACKGROUND_COLOR_SET_COMMAND = "/background color"
+        val BRIGHTNESS_INCREASE_COMMAND = "/brightness increase"
+        val BRIGHTNESS_DECREASE_COMMAND = "/brightness decrease"
 
-    val TAKE_PHOTO_COMMAND = "/photo"
+        val CALM_MODE_ON_COMMAND = "/calm-mode on"
+        val CALM_MODE_SET_SOUND_COMMAND = "/calm-mode set sound"
+        val CALM_MODE_OFF_COMMAND = "/calm-mode off"
+        val CALM_MODE_SENS_INCREASE_COMMAND = "/calm-mode sensitivity increase"
+        val CALM_MODE_SENS_DECREASE_COMMAND = "/calm-mode sensitivity decrease"
+        val CALM_MODE_VOLUME_INCREASE_COMMAND = "/calm-mode volume increase"
+        val CALM_MODE_VOLUME_DECREASE_COMMAND = "/calm-mode volume decrease"
+
+        val TAKE_PHOTO_COMMAND = "/photo"
+    }
 
     private lateinit var appBarConfiguration: AppBarConfiguration
     private lateinit var binding: ActivityMainBinding
+
     var backgroundColorView: View? = null
-    var calmModeSavedSound: File? = null
 
     // hardcoded settings allows to turn off TG support for dev runs.
     // remaining function will be audio service which will show current noise level
-    val useTelegram = true
+    private val useTelegram = true
+    private val sampleRateHz = 44100
+    private val windowSizeSec = 5
 
     private val connectedUserCommands: Array<Array<String>>
         get() {
             val result = ArrayList<Array<String>>()
             result.add(arrayOf(TAKE_PHOTO_COMMAND))
-            result.add(arrayOf(INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND))
-            result.add(arrayOf(BACKGROUND_COLOR_SET_COMMAND, BRIGHTNESS_INCREASE_COMMAND, BRIGHTNESS_DECREASE_COMMAND))
+            result.add(
+                arrayOf(
+                    Companion.INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND
+                )
+            )
+            result.add(
+                arrayOf(
+                    BACKGROUND_COLOR_SET_COMMAND,
+                    BRIGHTNESS_INCREASE_COMMAND,
+                    BRIGHTNESS_DECREASE_COMMAND
+                )
+            )
             if (setting.calmModeOn) {
                 result.add(arrayOf(CALM_MODE_OFF_COMMAND, CALM_MODE_SET_SOUND_COMMAND))
-                result.add(arrayOf(CALM_MODE_SENS_INCREASE_COMMAND, CALM_MODE_SENS_DECREASE_COMMAND, ))
-                result.add(arrayOf(CALM_MODE_VOLUME_INCREASE_COMMAND, CALM_MODE_VOLUME_DECREASE_COMMAND))
+                result.add(
+                    arrayOf(
+                        CALM_MODE_SENS_INCREASE_COMMAND,
+                        CALM_MODE_SENS_DECREASE_COMMAND,
+                    )
+                )
+                result.add(
+                    arrayOf(
+                        CALM_MODE_VOLUME_INCREASE_COMMAND, CALM_MODE_VOLUME_DECREASE_COMMAND
+                    )
+                )
             } else if (setting.calmModeSound != null) {
                 result.add(arrayOf(CALM_MODE_ON_COMMAND, CALM_MODE_SET_SOUND_COMMAND))
             } else {
@@ -93,9 +113,16 @@ class MainActivity : AppCompatActivity() {
         }
     private val disconnectedUserCommands = arrayOf(arrayOf("/start"))
 
-    var detectionService: AudioDetectionService? = null
+    private lateinit var detectionService: AudioDetectionService
+    private lateinit var cameraService: CameraService
+    private lateinit var calmingService: CalmingService
+    private lateinit var alarmingService: AlarmingService
+
+    @Volatile
     var telegramBotService: TelegramBotService? = null
     var wl: WakeLock? = null
+
+    @Volatile
     lateinit var setting: NannySettings
     val executor: ExecutorService = Executors.newFixedThreadPool(3)
 
@@ -103,11 +130,22 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Log.i("MainActivity", "Starting main activity")
+        Log.i(TAG, "Starting main activity")
         detectionService = AudioRecordService()
-        (detectionService as PermissionHungryService).ensurePermission(this, "android.permission.CAMERA", PermissionHungryService.PERMISSION_COUNTER.incrementAndGet())
+        cameraService = CameraService(this, this::runOnUiThread, executor, { this.telegramBotService })
+        val grants: MutableSet<String> = HashSet()
+        grants.addAll((detectionService as PermissionHungryService).requiredPermissions.keys)
+        grants.addAll(cameraService.requiredPermissions.keys)
+        cameraService.ensurePermission(this, grants, PermissionHungryService.PERMISSION_COUNTER.incrementAndGet())
 
         initAndApplySettings()
+
+        calmingService = CalmingService({ this.setting }, this)
+        alarmingService = AlarmingService({ this.setting },
+            { this.telegramBotService },
+            { this.connectedUserCommands },
+            sampleRateHz
+        )
 
         // wake lock prevents phone from sleep but it starts sending garbage instead of audio
 //        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -124,15 +162,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun initNannySwitch(
-        view: View,
-        activity: MainActivity,
-        button: Button,
-        avgText: TextView,
-        maxText: TextView
+        view: View, activity: MainActivity, button: Button, avgText: TextView, maxText: TextView
     ) {
-        Log.i("MainActivity", "Start Nanny's switch init")
+        Log.i(TAG, "Start Nanny's switch init")
         if (detectionService is PermissionHungryService) {
-            button.isEnabled = (detectionService as PermissionHungryService).ensurePermission(activity)
+            button.isEnabled =
+                (detectionService as PermissionHungryService).ensurePermission(activity)
         }
         button.setOnClickListener {
             val detectionService = this.detectionService!!
@@ -162,22 +197,17 @@ class MainActivity : AppCompatActivity() {
         Snackbar.make(view, "Starting audio service", Snackbar.LENGTH_LONG)
             .setAction("Action", null).show()
         executor.execute {
-            telegramBotService?.sendBroadcastMessage("Nanny is starting", connectedUserCommands)
+            telegramBotService?.sendBroadcastMessage(
+                "Nanny is starting with sound alarm level ${setting.soundLevelThreshold}",
+                connectedUserCommands
+            )
         }
 
-        val sampleRateHz = 44100
-        val windowSizeSec = 5
         val samplesSize = sampleRateHz * windowSizeSec
         val windowData = ByteArray(samplesSize)
         val windowOffset = AtomicInteger(0)
         val lastCheckTime = AtomicLong(System.currentTimeMillis() + windowSizeSec * 1000)
 
-        val alarmStartedAt = AtomicLong(0)
-        val alarmValue = AtomicInteger(0)
-
-        val lastAlarmTime = AtomicLong(0)
-        val lastAlarmValue = AtomicInteger(0)
-        val calmModePlaying = AtomicBoolean(false)
         detectionService.addCallback { data, offset, length ->
             val currentTime = System.currentTimeMillis()
             // append data to windowData
@@ -212,103 +242,25 @@ class MainActivity : AppCompatActivity() {
                     maxText.text = "$max"
                 }
 
-                if (setting.calmModeOn && !calmModePlaying.get() && avg > setting.calmModeSensitivity) {
-                    if (calmModeSavedSound == null) {
-                        val calmModeSoundData = android.util.Base64.decode(setting.calmModeSound, android.util.Base64.DEFAULT)
-                        calmModeSavedSound = File.createTempFile("voice", ".ogg")
-                        calmModeSavedSound!!.deleteOnExit()
-                        val stream = FileOutputStream(calmModeSavedSound)
-                        try {
-                            stream.write(calmModeSoundData)
-                        } finally {
-                            stream.close()
-                        }
-                    }
-
-                    val volume: Float = (setting.calmModeVolume / 100.0).toFloat()
-                    val mPlayer = MediaPlayer.create(this, Uri.fromFile(calmModeSavedSound))
-                    mPlayer.setVolume(volume, volume)
-                    mPlayer.setOnCompletionListener {
-                        try {
-                            mPlayer.release()
-                        } catch (e: java.lang.Exception) {
-                            Log.e("MainActivity", "Cannot release player due error", e)
-                        }
-                        calmModePlaying.set(false)
-                    }
-                    mPlayer.setOnErrorListener { mp, what, extra ->
-                        try {
-                            mPlayer.release()
-                        } catch (e: java.lang.Exception) {
-                            Log.e("MainActivity", "Cannot release player due error", e)
-                        }
-                        calmModePlaying.set(false)
-                        true
-                    }
-                    mPlayer.start()
-                    calmModePlaying.set(true)
+                if (calmingService.canStartCalmingSound() && avg > setting.calmModeSensitivity) {
+                    calmingService.startCalmingSound()
                 }
 
-                if (avg > setting.soundLevelThreshold) {
-                    val currentAlarmValue = alarmValue.get() / 100.0
-                    if (alarmStartedAt.get() + 2000L > currentTime || avg < currentAlarmValue) { // give 2 sec or if sound is lowering
-                        val lastAvg = lastAlarmValue.get() / 100.0
-                        Log.i("MainActivity", "Start processing sound with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
-                        val canThrowEvent =
-                            (currentTime - lastAlarmTime.get() > 5000L ) && // hard limit on message freq
-                            (lastAlarmTime.get() + 1000 * setting.alarmCooldownSec < currentTime || // user defined limit on freq
-                                    lastAvg + setting.alarmCooldownOverrideIncreaseThreshold < avg)  // user defined cooldown override on extreame sound increase
-                        if (canThrowEvent) {
-                            lastAlarmTime.set(currentTime)
-                            lastAlarmValue.set((100 * avg).toInt())
-                            telegramBotService?.sendBroadcastMessage(
-                                "Alarm: threshold was reached. Current value: $avg",
-                                connectedUserCommands
-                            )
-
-                            val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
-                            val currentOffset = windowOffset.get()
-                            Log.i("MainActivity", "Offset $currentOffset, window data size: ${windowData.size}")
-                            if (currentOffset < windowData.size)
-                                wavRecorder.write(windowData, currentOffset, windowData.size - currentOffset)
-                            if (currentOffset > 0)
-                                wavRecorder.write(windowData, 0, currentOffset)
-
-                            telegramBotService?.sendBroadcastVoice(wavRecorder.writeToArray())
-                        } else {
-                            Log.i("MainActivity", "Skip alarm with avg $avg, last time ${Date(lastAlarmTime.get())}, last avg $lastAvg")
-                        }
-                        alarmStartedAt.set(0)
-                        alarmValue.set(0)
-                    } else {
-                        Log.i("MainActivity", "Skip alarm with avg $avg as first encounter")
-                        if (alarmStartedAt.get() == 0L) {
-                            alarmStartedAt.set(currentTime)
-                        }
-                        alarmValue.set(Math.max(alarmValue.get(), (100 * avg).toInt()))
-                    }
-                } else {
-                    alarmStartedAt.set(0)
-                    alarmValue.set(0)
-                }
+                alarmingService.sendAlarmIfNeeded(avg, windowData, windowOffset)
             }
         }
     }
 
     private fun stopDetectionService(
-        detectionService: AudioDetectionService,
-        button: Button?,
-        view: View?
+        detectionService: AudioDetectionService, button: Button?, view: View?
     ) {
         detectionService.stop()
         detectionService.removeCallbacks()
 
-        if (button!=null)
-            button.text = getString(R.string.start)
+        if (button != null) button.text = getString(R.string.start)
 
-        if (view!=null)
-            Snackbar.make(view, "Stopping audio service", Snackbar.LENGTH_LONG)
-                .setAction("Action", null).show()
+        if (view != null) Snackbar.make(view, "Stopping audio service", Snackbar.LENGTH_LONG)
+            .setAction("Action", null).show()
 
         executor.execute {
             telegramBotService?.sendBroadcastMessage("Nanny is shutting down")
@@ -322,7 +274,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun stopDetectionServiceIfRunning(button: Button?, view: View?) {
-        Log.i("MainActivity", "Stopping Audio service")
+        Log.i(TAG, "Stopping Audio service")
         if (detectionService?.isRunning() == true) {
             stopDetectionService(detectionService!!, button, view)
         }
@@ -342,220 +294,36 @@ class MainActivity : AppCompatActivity() {
         setBrightness()
 
         if (useTelegram && setting.botToken?.isNotBlank() == true) {
-            telegramBotService = TelegramBotService(
-                setting.botToken,
+            telegramBotService = TelegramBotService(setting.botToken,
                 setting.allowedUsers,
                 setting.knownChats,
-                object : TelegramBotCallback {
-                    var backgroundColorSetExpected = AtomicReference<String>()
-                    var calmModeSetSoundExpected = AtomicReference<String>()
-
-                    override fun onChatOpen(username: String?, chatId: String?) {
-                        // todo settings can be updated from UI thread and from TG thread. Need sync.
-                        setting.storeSettings(preferences)
-                        telegramBotService!!.sendMessageToChat(
-                            chatId!!,
-                            "Welcome to Nanny.",
-                            connectedUserCommands
-                        )
-                    }
-
-                    override fun onUnsubscribe(username: String?) {
-                        // todo settings can be updated from UI thread and from TG thread. Need sync.
-                        var chatId = setting.knownChats.get(username)
-                        setting.knownChats.remove(username)
-                        setting.storeSettings(preferences)
-                        if (chatId != null) {
-                            telegramBotService!!.sendMessageToChat(
-                                chatId,
-                                "You will not receive any message. To resume send /start.",
-                                disconnectedUserCommands
-                            )
+                TgController({ this.setting },
+                    { newSetting -> this.setting = newSetting; setting.storeSettings(preferences) },
+                    { this.telegramBotService },
+                    { this.connectedUserCommands },
+                    { this.disconnectedUserCommands },
+                    {
+                        runOnUiThread {
+                            this.backgroundColorView?.setBackgroundColor(Color.parseColor(this.setting.backgroundColor))
                         }
-                    }
-
-                    override fun onMessage(username: String?, chatId: String?, message: String?) {
-                        if (message.equals(DECREASE_SENSITIVITY_COMMAND)) {
-                            // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold + 1).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New sound alarm level is ${setting.soundLevelThreshold}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(INCREASE_SENSITIVITY_COMMAND)) {
-                            // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            setting = NannySettingsBuilder(setting).setSoundLevelThreshold(setting.soundLevelThreshold - 1).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New sound alarm level is ${setting.soundLevelThreshold}",
-                                connectedUserCommands
-                            )
-                        }
-
-                        if (message.equals(BACKGROUND_COLOR_SET_COMMAND)) {
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "Please write new color. Allowed: #RRGGBB or red, blue, green, black, white, gray, cyan, magenta, yellow, lightgray, darkgray, grey, lightgrey, darkgrey, aqua, fuchsia, lime, maroon, navy, olive, purple, silver, and teal.",
-                                connectedUserCommands
-                            )
-                            backgroundColorSetExpected.set(chatId)
-                        }
-                        if (chatId.equals(backgroundColorSetExpected.get())) {
-                            if (message != null && !message.startsWith("/")) {
-                                try {
-                                    val newColor = Color.parseColor(message)
-                                    setting = NannySettingsBuilder(setting)
-                                        .setBackgroundColor(message)
-                                        .build()
-                                    setting.storeSettings(preferences)
-                                    runOnUiThread {
-                                        backgroundColorView?.setBackgroundColor(newColor)
-                                    }
-                                    telegramBotService!!.sendMessageToChat(
-                                        chatId!!,
-                                        "New color is ${setting.backgroundColor}",
-                                        connectedUserCommands
-                                    )
-                                } catch (e: java.lang.Exception) {
-                                    Log.e("MainActivity", "Cannot set new color", e)
-                                    telegramBotService!!.sendMessageToChat(
-                                        chatId!!,
-                                        "Cannot parse color ${message}. Allowed: #RRGGBB or red, blue, green, black, white, gray, cyan, magenta, yellow, lightgray, darkgray, grey, lightgrey, darkgrey, aqua, fuchsia, lime, maroon, navy, olive, purple, silver, and teal.",
-                                        connectedUserCommands
-                                    )
-                                }
+                    },
+                    { runOnUiThread { setBrightness() } },
+                    { calmingService.reinitCalmingSound() },
+                    { chatId ->
+                        if (detectionService?.isRunning() == true) {
+                            if (chatId != null) {
+                                cameraService.takePicture(chatId)
                             }
-                            backgroundColorSetExpected.set(null)
-                        }
-                        if (message.equals(BRIGHTNESS_DECREASE_COMMAND)) {
-                            // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            setting = NannySettingsBuilder(setting).setScreenBrightness(setting.screenBrightness - 10).build()
-                            setting.storeSettings(preferences)
-                            runOnUiThread { setBrightness() }
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New screen brightness is ${setting.screenBrightness}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(BRIGHTNESS_INCREASE_COMMAND)) {
-                            // todo settings can be updated from UI thread and from TG thread. Need sync.
-                            setting = NannySettingsBuilder(setting).setScreenBrightness(setting.screenBrightness + 10).build()
-                            setting.storeSettings(preferences)
-                            runOnUiThread { setBrightness() }
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New screen brightness is ${setting.screenBrightness}",
-                                connectedUserCommands
-                            )
-                        }
-
-                        if (message.equals(CALM_MODE_SET_SOUND_COMMAND)) {
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "Please send voice message to bot.",
-                                connectedUserCommands
-                            )
-                            calmModeSetSoundExpected.set(chatId)
-                        }
-                        if (chatId.equals(calmModeSetSoundExpected.get())) {
-                            if (message != null && !message.startsWith("/")) {
-                                calmModeSetSoundExpected.set(null)
+                        } else {
+                            if (chatId != null) {
+                                telegramBotService!!.sendMessageToChat(
+                                    chatId,
+                                    "You need to start nanny to take photos.",
+                                    connectedUserCommands
+                                )
                             }
                         }
-                        if (message.equals(CALM_MODE_ON_COMMAND)) {
-                            setting = NannySettingsBuilder(setting).setCalmModeOn(true).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "Calm-mode was enabled with sensitivity ${setting.calmModeSensitivity} and volume ${setting.calmModeVolume}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(CALM_MODE_SENS_DECREASE_COMMAND)) {
-                            setting = NannySettingsBuilder(setting).setCalmModeSensitivity(setting.calmModeSensitivity + 1).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New calm-mode sensitivity is ${setting.calmModeSensitivity}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(CALM_MODE_SENS_INCREASE_COMMAND)) {
-                            setting = NannySettingsBuilder(setting).setCalmModeSensitivity(setting.calmModeSensitivity - 1).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New calm-mode sensitivity is ${setting.calmModeSensitivity}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(CALM_MODE_VOLUME_DECREASE_COMMAND)) {
-                            setting = NannySettingsBuilder(setting).setCalmModeVolume(setting.calmModeVolume - 10).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New calm-mode volume is ${setting.calmModeVolume}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(CALM_MODE_VOLUME_INCREASE_COMMAND)) {
-                            setting = NannySettingsBuilder(setting).setCalmModeVolume(setting.calmModeVolume + 10).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "New calm-mode volume is ${setting.calmModeVolume}",
-                                connectedUserCommands
-                            )
-                        }
-                        if (message.equals(CALM_MODE_OFF_COMMAND)) {
-                            setting = NannySettingsBuilder(setting).setCalmModeOn(false).build()
-                            setting.storeSettings(preferences)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "Calm-mode was disabled",
-                                connectedUserCommands
-                            )
-                        }
-
-                        if (message.equals(TAKE_PHOTO_COMMAND)) {
-                            if (detectionService?.isRunning() == true) {
-                                if (chatId != null) {
-                                    takePictureX(chatId)
-                                }
-                            } else {
-                                if (chatId != null) {
-                                    telegramBotService!!.sendMessageToChat(
-                                        chatId,
-                                        "You need to start nanny to take photos.",
-                                        connectedUserCommands
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    override fun onVoiceMessage(username: String?, chatId: String?, data: ByteArray?) {
-                        if (calmModeSetSoundExpected.get() == chatId) {
-                            setting = NannySettingsBuilder(setting)
-                                .setCalmModeSound(android.util.Base64.encodeToString(data, android.util.Base64.DEFAULT))
-                                .build()
-                            setting.storeSettings(preferences)
-                            calmModeSavedSound = null
-                            calmModeSetSoundExpected.set(null)
-                            telegramBotService!!.sendMessageToChat(
-                                chatId!!,
-                                "Sound for calm mode was saved",
-                                connectedUserCommands
-                            )
-                        }
-                    }
-                }
-            )
+                    }))
             telegramBotService!!.init()
         }
     }
@@ -566,120 +334,20 @@ class MainActivity : AppCompatActivity() {
         window.attributes = lp
     }
 
-    private var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>? = null
-    private var imageCapture: ImageCapture? = null
-    private var camera: Camera? = null
-    private var cameraInitializationFailed = false;
-    private fun takePictureX(chatId: String) {
-        runOnUiThread {
-            takePictureXUiRunnable(chatId)
-        }
-    }
-
-    private fun takePictureXUiRunnable(chatId: String) {
-        // this init will work because only one thread access cameraProviderFuture/imageCapture
-        // pay attention to any changes here
-        if (cameraProviderFuture == null && !cameraInitializationFailed) {
-            try {
-                cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-            } catch (e: IllegalStateException) {
-                Log.e("MainActivity", "Could not init ProcessCameraProvider", e)
-                cameraInitializationFailed = true
-                telegramBotService?.sendBroadcastMessage("Could not init camera")
-            }
-        }
-        cameraProviderFuture!!.addListener({
-            runOnUiThread {
-                val provider = try {
-                    cameraProviderFuture!!.get()
-
-                } catch (e: java.lang.Exception) {
-                    Log.e("MainActivity", "Could not get ProcessCameraProvider from future", e)
-                    cameraInitializationFailed = true
-                    telegramBotService?.sendBroadcastMessage("Could not init camera")
-                    null
-                }
-                if (provider != null) {
-                    takePictureXCameraProviderListenerUiRunnable(provider, chatId)
-                }
-            }
-        }, executor)
-    }
-
-    private fun takePictureXCameraProviderListenerUiRunnable(
-        cameraProvider: ProcessCameraProvider,
-        chatId: String
-    ) {
-        val hasCamera = try {
-            cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
-        } catch (e: CameraInfoUnavailableException) {
-            Log.i("MainActivity", "Cannot check camera availability", e)
-            false
-        }
-        if (!hasCamera) {
-            cameraInitializationFailed = true
-            executor.execute {
-                telegramBotService?.sendBroadcastMessage("Sorry, this phone does not have front camera")
-            }
-            return
-        }
-        if (imageCapture == null) {
-            imageCapture = ImageCapture
-                .Builder()
-                .setTargetResolution(Size(1920, 1080))
-                .build()
-        }
-        if (camera == null) {
-            camera = cameraProvider.bindToLifecycle(
-                this,
-                CameraSelector.DEFAULT_FRONT_CAMERA,
-                imageCapture
-            )
-        }
-        imageCapture!!.takePicture(executor,
-            object : ImageCapture.OnImageCapturedCallback() {
-
-                override fun onError(error: ImageCaptureException) {
-                    Log.i("MainActivity", "Got error", error)
-                }
-
-                override fun onCaptureSuccess(imageProxy: ImageProxy) {
-                    Log.i(
-                        "MainActivity",
-                        "Got image $imageProxy of size ${imageProxy.height}x${imageProxy.width}"
-                    )
-                    val planeProxy = imageProxy.planes[0]
-                    val buffer: ByteBuffer = planeProxy.buffer
-                    val bytes = ByteArray(buffer.remaining())
-                    val stream = ByteArrayOutputStream()
-                    buffer.get(bytes)
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        .compress(Bitmap.CompressFormat.JPEG, 90, stream)
-                    val data = stream.toByteArray()
-                    Log.i("MainActivity", "Schedule sending image of size ${data.size}")
-                    executor.execute {
-                        Log.i("MainActivity", "Start sending image of size ${data.size}")
-                        telegramBotService?.sendImageToChat(chatId, data)
-                    }
-                    imageProxy.close()
-                }
-            })
-    }
-
     override fun onStop() {
         super.onStop()
-        Log.i("MainActivity", "onStop")
+        Log.i(TAG, "onStop")
         stopDetectionServiceIfRunning(findViewById(R.id.button_start_initial), null)
     }
 
     override fun onRestart() {
         super.onRestart()
-        Log.i("MainActivity", "onRestart")
+        Log.i(TAG, "onRestart")
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.i("MainActivity", "onDestroy")
+        Log.i(TAG, "onDestroy")
         executor.shutdown()
     }
 
@@ -701,20 +369,22 @@ class MainActivity : AppCompatActivity() {
 
     override fun onSupportNavigateUp(): Boolean {
         val navController = findNavController(R.id.nav_host_fragment_content_main)
-        return navController.navigateUp(appBarConfiguration)
-                || super.onSupportNavigateUp()
+        return navController.navigateUp(appBarConfiguration) || super.onSupportNavigateUp()
     }
 
     override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<String?>,
-        grantResults: IntArray
+        requestCode: Int, permissions: Array<String?>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        Log.i("MainActivity", "For code $requestCode result is ${grantResults.contentToString()} for ${permissions.contentToString()}")
+        Log.i(
+            TAG,
+            "For code $requestCode result is ${grantResults.contentToString()} for ${permissions.contentToString()}"
+        )
         if (detectionService is PermissionHungryService) {
             val button = findViewById<Button>(R.id.button_start_initial) // binding.fab
             if (button != null) {
-                button.isEnabled = (detectionService as PermissionHungryService).ensurePermission(this)
+                button.isEnabled =
+                    (detectionService as PermissionHungryService).ensurePermission(this)
             }
         }
     }
