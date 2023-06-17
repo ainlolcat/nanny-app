@@ -11,17 +11,21 @@ import java.io.File
 import java.io.FileOutputStream
 import java.lang.Exception
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
-class CalmingService(private val settingsSupplier: Supplier<NannySettings>, private val context: Context) {
+class CalmingService(private val settingsSupplier: Supplier<NannySettings>, private val context: Context, private val windowSizeSec: Int) {
     private val TAG = "CalmingService"
 
     private var calmModeSavedSoundRef: AtomicReference<File> = AtomicReference(null)
     private var calmModePlaying = AtomicBoolean(false)
+    private var calmModeEndTime = AtomicLong()
 
     fun canStartCalmingSound() : Boolean {
         val settings = settingsSupplier.get()
-        return settings.calmModeOn && !calmModePlaying.get()
+        return settings.calmModeOn // enabled
+                && !calmModePlaying.get() // is not playing right now
+                && calmModeEndTime.get() + windowSizeSec * 1000L < System.currentTimeMillis() // sound of calming sound flushed from input and cannot trigger itself
     }
 
     fun startCalmingSound() {
@@ -51,6 +55,7 @@ class CalmingService(private val settingsSupplier: Supplier<NannySettings>, priv
                 Log.e(TAG, "Cannot release player due error", e)
             }
             calmModePlaying.set(false)
+            calmModeEndTime.set(System.currentTimeMillis())
         }
         mPlayer.setOnErrorListener { mp, what, extra ->
             try {
@@ -59,6 +64,7 @@ class CalmingService(private val settingsSupplier: Supplier<NannySettings>, priv
                 Log.e(TAG, "Cannot release player due error", e)
             }
             calmModePlaying.set(false)
+            calmModeEndTime.set(System.currentTimeMillis())
             true
         }
         mPlayer.start()

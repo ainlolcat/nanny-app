@@ -1,24 +1,19 @@
 package org.ainlolcat.nanny
 
 import android.annotation.SuppressLint
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Bundle
 import android.os.PowerManager.WakeLock
 import android.util.Log
-import android.util.Size
 import android.view.*
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
-import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.navigation.findNavController
 import androidx.navigation.ui.AppBarConfiguration
 import androidx.navigation.ui.navigateUp
 import com.google.android.material.snackbar.Snackbar
-import com.google.common.util.concurrent.ListenableFuture
 import org.ainlolcat.nanny.databinding.ActivityMainBinding
 import org.ainlolcat.nanny.services.AlarmingService
 import org.ainlolcat.nanny.services.CalmingService
@@ -29,14 +24,11 @@ import org.ainlolcat.nanny.services.audio.impl.AudioRecordService
 import org.ainlolcat.nanny.services.control.TelegramBotService
 import org.ainlolcat.nanny.services.control.TgController
 import org.ainlolcat.nanny.settings.NannySettings
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.collections.HashSet
 import kotlin.math.abs
 
 
@@ -80,7 +72,7 @@ class MainActivity : AppCompatActivity() {
             result.add(arrayOf(TAKE_PHOTO_COMMAND))
             result.add(
                 arrayOf(
-                    Companion.INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND
+                    INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND
                 )
             )
             result.add(
@@ -140,7 +132,7 @@ class MainActivity : AppCompatActivity() {
 
         initAndApplySettings()
 
-        calmingService = CalmingService({ this.setting }, this)
+        calmingService = CalmingService({ this.setting }, this, windowSizeSec)
         alarmingService = AlarmingService({ this.setting },
             { this.telegramBotService },
             { this.connectedUserCommands },
@@ -170,7 +162,7 @@ class MainActivity : AppCompatActivity() {
                 (detectionService as PermissionHungryService).ensurePermission(activity)
         }
         button.setOnClickListener {
-            val detectionService = this.detectionService!!
+            val detectionService = this.detectionService
             if (detectionService.isRunning()) {
                 stopDetectionService(detectionService, button, view)
             } else {
@@ -269,14 +261,14 @@ class MainActivity : AppCompatActivity() {
         if (wl?.isHeld == true) {
             wl!!.release()
         } else if (wl == null) {
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 
     fun stopDetectionServiceIfRunning(button: Button?, view: View?) {
         Log.i(TAG, "Stopping Audio service")
-        if (detectionService?.isRunning() == true) {
-            stopDetectionService(detectionService!!, button, view)
+        if (detectionService.isRunning()) {
+            stopDetectionService(detectionService, button, view)
         }
     }
 
@@ -310,7 +302,7 @@ class MainActivity : AppCompatActivity() {
                     { runOnUiThread { setBrightness() } },
                     { calmingService.reinitCalmingSound() },
                     { chatId ->
-                        if (detectionService?.isRunning() == true) {
+                        if (detectionService.isRunning()) {
                             if (chatId != null) {
                                 cameraService.takePicture(chatId)
                             }
