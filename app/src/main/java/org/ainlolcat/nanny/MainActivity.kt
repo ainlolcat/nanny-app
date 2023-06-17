@@ -24,10 +24,10 @@ import org.ainlolcat.nanny.services.audio.impl.AudioRecordService
 import org.ainlolcat.nanny.services.control.TelegramBotService
 import org.ainlolcat.nanny.services.control.TgController
 import org.ainlolcat.nanny.settings.NannySettings
+import org.ainlolcat.nanny.utils.WavRecorder
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
         val CALM_MODE_VOLUME_DECREASE_COMMAND = "/calm-mode volume decrease"
 
         val TAKE_PHOTO_COMMAND = "/photo"
+        val SEND_CURRENT_SOUND_COMMAND = "/sound"
     }
 
     private lateinit var appBarConfiguration: AppBarConfiguration
@@ -65,11 +66,14 @@ class MainActivity : AppCompatActivity() {
     private val useTelegram = true
     private val sampleRateHz = 44100
     private val windowSizeSec = 5
+    private val samplesSize = ( sampleRateHz * windowSizeSec / 2048 ) * 2048
+    private val windowData = ByteArray(samplesSize)
+    private var windowOffset = 0
 
     private val connectedUserCommands: Array<Array<String>>
         get() {
             val result = ArrayList<Array<String>>()
-            result.add(arrayOf(TAKE_PHOTO_COMMAND))
+            result.add(arrayOf(TAKE_PHOTO_COMMAND, SEND_CURRENT_SOUND_COMMAND))
             result.add(
                 arrayOf(
                     INCREASE_SENSITIVITY_COMMAND, DECREASE_SENSITIVITY_COMMAND
@@ -194,21 +198,18 @@ class MainActivity : AppCompatActivity() {
                 connectedUserCommands
             )
         }
-
-        val samplesSize = sampleRateHz * windowSizeSec
-        val windowData = ByteArray(samplesSize)
-        val windowOffset = AtomicInteger(0)
         val lastCheckTime = AtomicLong(System.currentTimeMillis() + windowSizeSec * 1000)
-
         detectionService.addCallback { data, offset, length ->
             val currentTime = System.currentTimeMillis()
             // append data to windowData
-            if (windowOffset.get() + length <= windowData.size) {
-                System.arraycopy(data, offset, windowData, windowOffset.get(), length)
-                windowOffset.addAndGet(length)
-            } else {
-                System.arraycopy(data, offset, windowData, 0, length)
-                windowOffset.set(length)
+            synchronized(windowData) {
+                if (windowOffset + length <= windowData.size) {
+                    System.arraycopy(data, offset, windowData, windowOffset, length)
+                    windowOffset += length
+                } else {
+                    System.arraycopy(data, offset, windowData, 0, length)
+                    windowOffset = length
+                }
             }
             // such analyse will most likely trigger two messages with different noise level on same sample (t and t + 1 sec)
             // so need to filter signal like |_____/``| and trigger only if wave hits start of the window.
@@ -220,14 +221,14 @@ class MainActivity : AppCompatActivity() {
                 // process data
                 var commonMagnitude = 0
                 var max = 0
-                for (i in 0 until windowOffset.get()) {
+                for (i in 0 until windowData.size) {
                     val amp: Int = abs((windowData[i].toInt() and 0xff) - 127)
                     commonMagnitude += amp
                     if (amp > max) {
                         max = amp
                     }
                 }
-                val avg = Math.round(100.0 * commonMagnitude / windowOffset.get()) / 100.0
+                val avg = Math.round(100.0 * commonMagnitude / windowData.size) / 100.0
 
                 activity.runOnUiThread {
                     avgText.text = "$avg"
@@ -238,7 +239,7 @@ class MainActivity : AppCompatActivity() {
                     calmingService.startCalmingSound()
                 }
 
-                alarmingService.sendAlarmIfNeeded(avg, windowData, windowOffset)
+                alarmingService.sendAlarmIfNeeded(avg, getSoundData())
             }
         }
     }
@@ -315,9 +316,37 @@ class MainActivity : AppCompatActivity() {
                                 )
                             }
                         }
-                    }))
+                    },
+                    { chatId ->
+                        if (detectionService.isRunning()) {
+                            val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
+                            wavRecorder.write(getSoundData(), 0, windowData.size)
+                            telegramBotService?.sendVoiceToChat(chatId, wavRecorder.writeToArray())
+                        } else {
+                            if (chatId != null) {
+                                telegramBotService!!.sendMessageToChat(
+                                    chatId,
+                                    "You need to start nanny to get sounds.",
+                                    connectedUserCommands
+                                )
+                            }
+                        }
+                    }
+                ))
             telegramBotService!!.init()
         }
+    }
+
+    private fun getSoundData() : ByteArray {
+        val result = ByteArray(windowData.size)
+        synchronized(windowData) {
+            if (windowOffset < windowData.size)
+                System.arraycopy(windowData, windowOffset, result, 0,  windowData.size - windowOffset)
+            if (windowOffset > 0)
+                System.arraycopy(windowData, 0, result, windowData.size - windowOffset,  windowOffset)
+        }
+        return result
+
     }
 
     private fun setBrightness() {

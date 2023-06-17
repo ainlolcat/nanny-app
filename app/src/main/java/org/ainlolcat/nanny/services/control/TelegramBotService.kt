@@ -99,6 +99,11 @@ class TelegramBotService(botToken: String,
         }
     }
 
+    fun sendVoiceToChat(chatId:String, windowData: ByteArray) {
+        val audioMessage = SendVoice(chatId.toLong(), windowData)
+        execute(audioMessage)
+    }
+
     fun sendBroadcastVoice(windowData: ByteArray) {
         for (chatId in knownChats.values) {
             val audioMessage = SendVoice(chatId.toLong(), windowData)

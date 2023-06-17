@@ -16,6 +16,7 @@ import org.ainlolcat.nanny.MainActivity.Companion.CALM_MODE_VOLUME_DECREASE_COMM
 import org.ainlolcat.nanny.MainActivity.Companion.CALM_MODE_VOLUME_INCREASE_COMMAND
 import org.ainlolcat.nanny.MainActivity.Companion.DECREASE_SENSITIVITY_COMMAND
 import org.ainlolcat.nanny.MainActivity.Companion.INCREASE_SENSITIVITY_COMMAND
+import org.ainlolcat.nanny.MainActivity.Companion.SEND_CURRENT_SOUND_COMMAND
 import org.ainlolcat.nanny.MainActivity.Companion.TAKE_PHOTO_COMMAND
 import org.ainlolcat.nanny.settings.NannySettings
 import org.ainlolcat.nanny.settings.NannySettingsBuilder
@@ -32,6 +33,7 @@ class TgController (
     private val updateBrightness: Runnable,
     private val updateCalmingSound: Runnable,
     private val photoCallback: Consumer<String>,
+    private val sendSoundCallback: Consumer<String>,
     ) : TelegramBotCallback {
 
     private val TAG = "TgController"
@@ -220,6 +222,10 @@ class TgController (
 
         if (message.equals(TAKE_PHOTO_COMMAND)) {
             photoCallback.accept(chatId!!)
+        }
+
+        if (message.equals(SEND_CURRENT_SOUND_COMMAND)) {
+            sendSoundCallback.accept(chatId!!)
         }
     }
 

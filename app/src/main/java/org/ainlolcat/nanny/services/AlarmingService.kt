@@ -22,7 +22,7 @@ class AlarmingService(
     private val lastAlarmValue: AtomicInteger = AtomicInteger(0)
     private val lastAlarmTime: AtomicLong = AtomicLong(0)
 
-    fun sendAlarmIfNeeded(avg: Double, windowData: ByteArray, windowOffset: AtomicInteger) {
+    fun sendAlarmIfNeeded(avg: Double, data: ByteArray) {
         val currentTime = System.currentTimeMillis()
         val setting = settingsSupplier.get()!!
         val bot = botSupplier.get()
@@ -47,19 +47,7 @@ class AlarmingService(
                     )
 
                     val wavRecorder = WavRecorder(sampleRateHz, 8, 1)
-                    val currentOffset = windowOffset.get()
-                    Log.i(
-                        TAG,
-                        "Offset $currentOffset, window data size: ${windowData.size}"
-                    )
-                    if (currentOffset < windowData.size)
-                        wavRecorder.write(
-                            windowData,
-                            currentOffset,
-                            windowData.size - currentOffset
-                        )
-                    if (currentOffset > 0)
-                        wavRecorder.write(windowData, 0, currentOffset)
+                    wavRecorder.write(data, 0, data.size)
 
                     bot?.sendBroadcastVoice(wavRecorder.writeToArray())
                 } else {
